@@ -29,15 +29,23 @@
   webアプリと連携したいときに使用します。  
 ![](constitution.drawio.png)
 
-## 3. プロトコル
+## 3. シグナル
+各種色の意味は下記のとおりです。
+| 色 | 内容 |
+| ---- | ---- |
+| 黄 | スタート準備 |
+| 赤 | 準備完了 |
+| 緑 | スタート |
+
+## 4. プロトコル
 * esp_now  
 
 | 内容 | 送信 | 受信 | 第1bit | 第2bit | 第3bit | 第5bit | 第6bit | 第7bit | 第8bit |
 | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
 | ペアリング送信<br>(ブロードキャスト) | slave | master| 0 |
 | ペアリング返信 | slave | master | 1 |
-| スタート準備 | master | リモート | 10 |
-| スタート | master | リモート | 11 |
+| スタート | master | リモート | 10 |
+| シグナル | master | リモート | 11 |
 | ストップ | master | リモート | 12 |
 | 測定開始 | master | slave | 30 |
 | 測定停止 | master | slave | 31 |
@@ -46,8 +54,40 @@
 
 
 <br>  
-* Serial
+
+* Serial  
+"\n"(改行)までが1回分の通信となります。  
+";"が末尾にあると通信用の出力と判断します。  
+各ユニットは","で区切ります。  
+ユニット名、値は":"で区切ります。  
+例文：
+ユニット1:値1,ユニット2:値2,ユニット3,値3;\n
+
 
 | 内容 | 送信元 | 送信先 | Message | response |
 | ---- | ---- | ---- | ---- | ---- |
-| スタート指示 |  |
+| スタート指示 | パソコン | master | start; | start_ok; |
+| ストップ指示 | パソコン | master | stop; | stop_ok; |
+| シグナル指示 | パソコン | master | signal; | signal_ok; |
+| ペアリングset | パソコン | master | set:(ユニットNo.); | set_ok; |
+| ペアリングreset | パソコン | master | reset:(ユニットNo.); | reset_ok; |
+| 通過時間 | master | パソコン | unit:(ユニットNo.),lane:(レーンNo.),time:(ms) | - |
+
+## 5. タイムライン
+![](timeline.drawio.png)
+
+## 6. プログラム構成
+デバイス
+* master  
+  -> master用
+* slave  
+  -> slave用 通過センサー用
+* signal  
+  -> signal用 未着手
+* remote  
+　-> remote用 未着手  
+<br>  
+
+ソフトウェア
+* lap_section_timer.py
+  -> パソコン用　未着手
