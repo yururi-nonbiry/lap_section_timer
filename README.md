@@ -30,3 +30,24 @@
 ![](constitution.drawio.png)
 
 ## 3. プロトコル
+* esp_now  
+
+| 内容 | 送信 | 受信 | 第1bit | 第2bit | 第3bit | 第5bit | 第6bit | 第7bit | 第8bit |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| ペアリング送信<br>(ブロードキャスト) | slave | master| 0 |
+| ペアリング返信 | slave | master | 1 |
+| スタート準備 | master | リモート | 10 |
+| スタート | master | リモート | 11 |
+| ストップ | master | リモート | 12 |
+| 測定開始 | master | slave | 30 |
+| 測定停止 | master | slave | 31 |
+| 現在時間受信 | slave | master | 32 | ユニットNo. | 時間(ms) 4bit | 時間(ms) 3bit | 時間(ms) 2bit | 時間(ms) 1bit |
+| 通過時間受信 | slave | master | 33 | ユニットNo. | レーンNo. | 時間(ms) 4bit | 時間(ms) 3bit | 時間(ms) 2bit | 時間(ms) 1bit |
+
+
+<br>  
+* Serial
+
+| 内容 | 送信元 | 送信先 | Message | response |
+| ---- | ---- | ---- | ---- | ---- |
+| スタート指示 |  |
