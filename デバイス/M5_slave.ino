@@ -7,7 +7,7 @@
 // 電源 5V 待機電流 1mA
 
 // ステータス
-// 赤:待機 青:稼働中 緑:セッティングモード
+// 赤点滅:待機 青:稼働中 緑:セッティングモード
 // 緑:送信中・処理中
 
 // debug用
@@ -23,16 +23,16 @@
 #include <EEPROM.h>
 
 #include <FastLED.h>
-CRGB leds[1]; // LEDの色情報を入れる変数
+
+#define led_quantity 25  // ATOM matrixの時は25にする
+CRGB leds[led_quantity]; // LEDの色情報を入れる変数
 
 /*
 // stamp u3c
 // ボタンピン
 #define Btn_pin 9 // 9pin
-
 // LED データピン
 #define LED_pin 2 // 2pin
-
 // 各センサーのピン番号
 #define sensor_pow 10
 #define sensor1 4
@@ -58,15 +58,58 @@ CRGB leds[1]; // LEDの色情報を入れる変数
 #define sensor4 25
 #define sensor5 33
 
+RTC_DATA_ATTR uint8_t boot_count = 0; // sleepしても消えない
+
 // 割り込み用変数
 volatile uint8_t Btn_trig = 0;
 volatile uint8_t send_res = 0;
-volatile uint8_t set_status = 0;
+volatile int16_t set_status = 0;
 volatile uint32_t sensor_time[5] = {0, 0, 0, 0, 0};
 volatile uint8_t send_trig[5] = {0};
 
+// esp_nowで受信したタスクを格納する変数
+volatile int16_t task_list[10] = {-1};
+
+int16_t task_append(uint8_t task_no)
+{
+  for (uint8_t i = 0; i < 10; i++)
+  {
+    if (task_list[i] == -1)
+    {
+      task_list[i] = task_no;
+      Serial.print("task_append");
+      return 0;
+    }
+  }
+  return -1;
+}
+
+int16_t task_read()
+{
+  for (uint8_t i = 0; i < 10; i++)
+  {
+    if (task_list[i] != -1)
+    {
+      int16_t task_no = task_list[i];
+      task_list[i] = -1;
+      Serial.print("task_read");
+      return task_no;
+    }
+  }
+  return -1;
+}
+
 // グローバル変数
 uint8_t master_set_trig = 0; // マスターセット用
+
+void led_set(uint8_t R, uint8_t G, uint8_t B)
+{
+  for (uint8_t i = 0; i < led_quantity; i++)
+  {
+    leds[i] = CRGB(R, G, B);
+    FastLED.show();
+  }
+}
 
 // EEPROMの構造体
 struct set_data
@@ -81,6 +124,16 @@ void eeprom_write()
 {
   EEPROM.put<set_data>(0, eeprom_date); // EEPROMへの書き込み
   EEPROM.commit();                      // これが必要らしい
+}
+
+// Sleep 開始
+void sleep_start()
+{
+  // 100000us = 0.1sのタイマー設定
+  esp_sleep_enable_timer_wakeup(100000);
+  // ディープスリープ
+  esp_deep_sleep_start();
+  delay(1000); // sleep移行待機
 }
 
 // ESP32 NOW関係
@@ -150,15 +203,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len)
     }
     if (check_trig == 0)
     {
-      if (data[0] == 30)
-      {
-        set_status = 1;
-      }
-
-      if (data[0] == 31)
-      {
-        set_status = 2;
-      }
+      task_append(data[0]);
     }
   }
 }
@@ -193,7 +238,7 @@ void reference_time_send(uint32_t time_data)
   data[5] = (uint8_t)((time_data & 0x000000FF) >> 0);
 
 #ifdef debug
-Serial.println("send time");
+  Serial.println("send time");
   Serial.println(millis());
 #endif
   esp_err_t result = esp_now_send(slave.peer_addr, data, sizeof(data));
@@ -213,8 +258,7 @@ Serial.println("send time");
 void send_time(uint8_t *lane, uint32_t time_data)
 {
   // 送信中は緑点灯
-  leds[0] = CRGB(0, 255, 0);
-  FastLED.show();
+  led_set(0, 255, 0);
 
   uint8_t data[7];
   data[0] = 33;
@@ -238,41 +282,54 @@ void send_time(uint8_t *lane, uint32_t time_data)
   send_res = 0;
 
   // 送信済み後は青点灯
-  leds[0] = CRGB(0, 0, 255);
-  FastLED.show();
+  led_set(0, 0, 255);
 }
 
 void sensor1_isr()
 {
-  if (sensor_time[0] == 0)
+  if (send_trig[0] == 0)
+  {
+    send_trig[0] = 1;
     sensor_time[0] = millis();
+  }
 }
 void sensor2_isr()
 {
-  if (sensor_time[1] == 0)
+  if (send_trig[1] == 0)
+  {
+    send_trig[1] = 1;
     sensor_time[1] = millis();
+  }
 }
 void sensor3_isr()
 {
-  if (sensor_time[2] == 0)
+  if (send_trig[2] == 0)
+  {
+    send_trig[2] = 1;
     sensor_time[2] = millis();
+  }
 }
 void sensor4_isr()
 {
-  if (sensor_time[3] == 0)
+  if (send_trig[3] == 0)
+  {
+    send_trig[3] = 1;
     sensor_time[3] = millis();
+  }
 }
 void sensor5_isr()
 {
-  if (sensor_time[4] == 0)
+  if (send_trig[4] == 0)
+  {
+    send_trig[4] = 1;
     sensor_time[4] = millis();
+  }
 }
 
 // スタート処理
 void set_start()
 {
-  leds[0] = CRGB(0, 255, 0);
-  FastLED.show();
+  led_set(0, 255, 0);
   reference_time_send(millis()); // 基準となる時間を送信する
 
   digitalWrite(sensor_pow, HIGH); // センサー電源 ON
@@ -284,15 +341,13 @@ void set_start()
   attachInterrupt(sensor5, sensor5_isr, CHANGE);
 
   // スタート完了したので青を点灯
-  leds[0] = CRGB(0, 0, 255);
-  FastLED.show();
+  led_set(0, 0, 255);
 }
 
 // 終了処理
 void set_end()
 {
-  leds[0] = CRGB(0, 255, 0);
-  FastLED.show();
+  led_set(0, 255, 0);
 
   detachInterrupt(sensor1);
   detachInterrupt(sensor2);
@@ -303,8 +358,7 @@ void set_end()
   digitalWrite(sensor_pow, LOW); // センサー電源 OFF
 
   // 終了完了したので赤を点灯
-  leds[0] = CRGB(255, 0, 0);
-  FastLED.show();
+  led_set(255, 0, 0);
 }
 
 // esp now 初期設定
@@ -353,8 +407,7 @@ void master_set()
   Serial.println("master set");
 #endif
   // ボタン離すまで消灯
-  leds[0] = CRGB(0, 0, 0);
-  FastLED.show();
+  led_set(0, 0, 0);
 
   // ボタン押している間待ち
   while (digitalRead(Btn_pin) == LOW)
@@ -363,8 +416,7 @@ void master_set()
   }
 
   // 待ち受けモードに入るので緑点灯
-  leds[0] = CRGB(0, 255, 0);
-  FastLED.show();
+  led_set(0, 255, 0);
   digitalWrite(sensor_pow, HIGH); // センサー電源 ON
   master_set_trig = 1;            // 登録用トリガ
   delay(1000);
@@ -389,8 +441,7 @@ void master_set()
 
   digitalWrite(sensor_pow, LOW); // センサー電源 OFF
   // リセットするので消灯
-  leds[0] = CRGB(0, 0, 0);
-  FastLED.show();
+  led_set(0, 0, 0);
   ESP.restart(); // リセットする
   delay(1000);
 }
@@ -401,7 +452,7 @@ void setup()
 #ifdef debug
   Serial.begin(115200); // デバック用等
 #endif
-  FastLED.addLeds<NEOPIXEL, LED_pin>(leds, 1); // LED初期化
+  FastLED.addLeds<NEOPIXEL, LED_pin>(leds, led_quantity); // LED初期化
   FastLED.setBrightness(BRIGHTNESS);
 
   // EEPROM 読み込み
@@ -424,38 +475,128 @@ void setup()
 
   esp_now_begin(); // ESP_now 初期化
 
-  // 起動したので赤を点灯
-  leds[0] = CRGB(255, 0, 0);
-  FastLED.show();
+  // 復帰モード判定
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER)
+  {
+    // タイマー復帰
+    reference_time_send(millis()); // 問合せ、時間送信
+    for (uint8_t i = 0; i < 100; i++)
+    {
+      set_status = task_read();
+      delay(10);
+      if (set_status != -1)
+      {
+        break;
+      }
+    }
+    if (set_status == 30)
+    {
+      // スタートの場合
+      boot_count = 0;
+    }
+    else
+    {
+      // 待機の場合
+      boot_count++;
+      if (boot_count == 9)
+      {
+        led_set(255, 0, 0);
+      }
+      else if (boot_count == 10)
+      {
+        boot_count = 0;
+        led_set(0, 0, 0);
+      }
 
-  delay(1000); // 赤を1秒表示
+      sleep_start();
+    }
+  }
+  else
+  {
+    // その他(電源投入時を想定)
+    // 起動したので赤を点灯
+    led_set(255, 0, 0);
 
-  // 初期設定トリガ
-  if (digitalRead(Btn_pin) == LOW)
-    master_set();
+    delay(1000); // 赤を1秒表示
+
+    // 初期設定トリガ
+    if (digitalRead(Btn_pin) == LOW)
+      master_set();
 #ifdef debug
-  Serial.println("setup end");
+    Serial.println("setup end");
 #endif
+
+    // 起動後、初期設定をしなかったらスリープに入る
+    led_set(0, 0, 0);
+    sleep_start();
+  }
 }
 
 void loop()
 {
-  if (set_status == 1)
+  set_status = task_read();
+
+  switch (set_status)
   {
+  case 20:
 #ifdef debug
-    Serial.println("set start");
+    Serial.println("rec 20");
+#endif
+    led_set(0, 0, 0);
+    set_status = 0;
+    break;
+
+  case 21:
+#ifdef debug
+    Serial.println("rec 21");
+#endif
+    led_set(255, 255, 0);
+    set_status = 0;
+    break;
+
+  case 22:
+#ifdef debug
+    Serial.println("rec 22");
+#endif
+    led_set(255, 0, 0);
+    set_status = 0;
+
+    break;
+
+  case 23:
+#ifdef debug
+    Serial.println("rec 23");
+#endif
+    led_set(0, 0, 255);
+    set_status = 0;
+
+    break;
+
+  case 30:
+#ifdef debug
+    Serial.println("rec 30");
 #endif
     set_start();
+    Btn_trig = 0;
     set_status = 0;
-  }
-  if (set_status == 2)
-  {
+
+    break;
+
+  case 31:
 #ifdef debug
     Serial.println("set end1");
 #endif
     set_end();
+    sleep_start();
     set_status = 0;
+    break;
+
+  default:
+    break;
   }
+
   if (Btn_trig != 0)
   {
 #ifdef debug
@@ -469,11 +610,17 @@ void loop()
   // センサーが感知したか確認する
   for (uint8_t i = 0; i < 5; i++)
   {
-    if (sensor_time[i] != 0)
+    if (send_trig[i] == 1)
     {
       send_time(&i, sensor_time[i]);
     }
-    sensor_time[i] = 0;
+    send_trig[i] = 2;
+    if (send_trig[i] == 2)
+    {
+      // 一回感知してからの待機時間 1000ms
+      if (millis() - sensor_time[i] > 1000)
+        send_trig[i] = 0;
+    }
   }
 
   delay(1);

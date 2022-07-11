@@ -1,7 +1,8 @@
 // 320 * 280
 // 320 * 40
 
-//機種切り替え
+// 機種切り替え
+// M5Core2を使用する場合はコメントアウトを外す
 #define _M5Core2
 
 #ifdef _M5Core2
@@ -16,6 +17,10 @@ AXP192 power;
 
 // デバック用
 #define debug
+
+// モード判定
+// 1:スタート準備待機
+volatile uint8_t device_status = 0;
 
 // EEPROMの構造体
 struct set_data
@@ -43,7 +48,7 @@ struct receive_time
   uint32_t time;
 };
 
-receive_time time_list[100];
+volatile receive_time time_list[100];
 
 void receive_time_reset()
 {
@@ -55,21 +60,10 @@ void receive_time_reset()
   }
 }
 
-void receive_time_append(uint8_t unit, uint8_t lane, uint32_t time)
-{
-  for (uint8_t i = 0; i < 100; i++)
-  {
-    if (time_list[i].unit != 255)
-    {
-      time_list[i].unit = unit;
-      time_list[i].lane = lane;
-      time_list[i].time = time;
-      break;
-    }
-  }
-}
-
 volatile uint8_t slave_count_temp = 0;
+
+// 各ユニットのステータス収納
+volatile uint8_t unit_status[18] = {0};
 
 // 各ユニットの時間収納
 volatile uint32_t comp_time[18] = {0};
@@ -79,7 +73,17 @@ volatile uint32_t send_time = 0;
 volatile uint32_t receve_time = 0;
 volatile uint32_t response_time[18] = {0};
 
+// スタートした時間の格納
 volatile uint32_t start_time = 0;
+
+// スタートトリガを開始した時間
+volatile uint32_t start_trig_time = 0;
+
+// 各種トリガ (受信したときにルーチンを解放する為)
+volatile bool start_trig = false;
+volatile bool stop_trig = false;
+volatile bool signal_trig = false;
+volatile bool response_trig[17] = {false};
 
 // 受信した結果の構造体
 struct receive_data
@@ -89,7 +93,7 @@ struct receive_data
   uint8_t lane;   // slave_MACアドレス
   uint32_t time;  // slave_MACアドレス
 };
-receive_data receive_data_list[5];
+volatile receive_data receive_data_list[5];
 // uint8_t receive_data_list[10]
 
 // EEPROMリセット
@@ -125,6 +129,9 @@ ButtonColors cl_off = {BLACK, 0xC618, 0xC618}; // 指を離した時の色 (背�
 // ボタン定義名( X軸, Y軸, 横幅, 高さ, 回転, ボタンのラベル, 指を離した時の色指定, タッチした時の色指定）
 Button btn_start(0, 0, 0, 0, false, "Start", cl_off, cl_on);
 Button btn_stop(0, 0, 0, 0, false, "Stop", cl_off, cl_on);
+Button btn_signal(0, 0, 0, 0, false, "Signal", cl_off, cl_on);
+Button btn_up(0, 0, 0, 0, false, "Up", cl_off, cl_on);
+Button btn_down(0, 0, 0, 0, false, "Down", cl_off, cl_on);
 Button btn_set1(0, 0, 0, 0, false, "Set1", cl_off, cl_on);
 Button btn_set2(0, 0, 0, 0, false, "Set2", cl_off, cl_on);
 Button btn_main(0, 0, 0, 0, false, "main", cl_off, cl_on);
@@ -153,7 +160,7 @@ Button btn_slave_set(0, 0, 0, 0, false, "set", cl_off, cl_on);
 Button btn_slave_reset(0, 0, 0, 0, false, "reset", cl_off, cl_on);
 Button btn_slave_add(0, 0, 0, 0, false, "+", cl_off, cl_on);
 Button btn_slave_sub(0, 0, 0, 0, false, "-", cl_off, cl_on);
-Button btn_save(0, 0, 0, 0, false, "save", cl_off, cl_on);
+// Button btn_save(0, 0, 0, 0, false, "save", cl_off, cl_on);
 
 // メイン画面描画
 void main_draw()
@@ -161,7 +168,10 @@ void main_draw()
   M5.Lcd.fillScreen(BLACK); // 画面初期化
   btn_start.set(10, 200, 120, 40);
   btn_stop.set(170, 200, 120, 40);
-  btn_set1.set(5, 10, 80, 40);
+  btn_signal.set(170, 5, 120, 40);
+  btn_up.set(280, 70, 40, 50);
+  btn_down.set(280, 140, 40, 50);
+  btn_set1.set(5, 5, 80, 40);
   btn_set2.set(-1, -1);
   btn_main.set(-1, -1);
   btn_reset.set(-1, -1);
@@ -189,28 +199,72 @@ void main_draw()
   btn_slave_reset.set(-1, -1);
   btn_slave_add.set(-1, -1);
   btn_slave_sub.set(-1, -1);
-  btn_save.set(-1, -1);
+  // btn_save.set(-1, -1);
 
   // M5.Buttons.draw(); // ボタンを描画
   btn_start.draw();
   btn_stop.draw();
+  btn_signal.draw();
+  btn_up.draw();
+  btn_down.draw();
   btn_set1.draw();
 
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 80);
-  for (uint8_t i = 0; i < 5; i++)
+
+  if (device_status == 1)
   {
-    if (time_list[i + time_list_number].unit != 255)
+    for (int16_t i = 0; i < 18; i++)
     {
-      M5.Lcd.print(F(""));
-      M5.Lcd.print(i + time_list_number);
-      M5.Lcd.print(F(""));
-      M5.Lcd.print(time_list[i + time_list_number].unit);
-      M5.Lcd.print(F(""));
-      M5.Lcd.print(time_list[i + time_list_number].lane);
-      M5.Lcd.print(F(""));
-      M5.Lcd.println(time_list[i + time_list_number].time);
+      if (i < 9)
+      {
+        M5.Lcd.setCursor(10, 60 + 16 * i);
+      }
+      else
+      {
+        M5.Lcd.setCursor(140, 60 + 16 * (i - 9));
+      }
+
+      M5.Lcd.print(F("Unit:"));
+      M5.Lcd.print(i + 1);
+      M5.Lcd.print(F(","));
+      switch (unit_status[i])
+      {
+      case 0:
+        M5.Lcd.print(F("-"));
+        break;
+
+      case 1:
+        M5.Lcd.print(F("OK"));
+        break;
+
+      case 2:
+        M5.Lcd.print(F("NG"));
+        break;
+
+      default:
+        break;
+      }
+    }
+  }
+  else
+  {
+    M5.Lcd.setCursor(0, 80);
+    for (uint8_t i = 0; i < 5; i++)
+    {
+      uint8_t count_temp = i + time_list_number * 5;
+      if (time_list[count_temp].unit != 255)
+      {
+        float time_sec = float(time_list[count_temp].time) / 1000;
+        M5.Lcd.print(F(""));
+        M5.Lcd.print(count_temp);
+        M5.Lcd.print(F(" "));
+        M5.Lcd.print(time_list[count_temp].unit + 1);
+        M5.Lcd.print(F("-"));
+        M5.Lcd.print(time_list[count_temp].lane + 1);
+        M5.Lcd.print(F(" "));
+        M5.Lcd.println(String(time_sec, 3));
+      }
     }
   }
 }
@@ -221,6 +275,9 @@ void set1_draw()
 
   btn_start.set(-1, -1);
   btn_stop.set(-1, -1);
+  btn_signal.set(-1, -1);
+  btn_up.set(-1, -1);
+  btn_down.set(-1, -1);
   btn_set1.set(-1, -1);
   btn_set2.set(5, 10, 80, 40);
   btn_main.set(-1, -1);
@@ -249,7 +306,7 @@ void set1_draw()
   btn_slave_reset.set(-1, -1);
   btn_slave_add.set(-1, -1);
   btn_slave_sub.set(-1, -1);
-  btn_save.set(-1, -1);
+  // btn_save.set(-1, -1);
 
   M5.Lcd.fillScreen(BLACK); // 画面初期化
   // M5.Buttons.draw(); // ボタンを描画
@@ -272,6 +329,9 @@ void set2_draw()
   M5.Lcd.fillScreen(BLACK); // 画面初期化
   btn_start.set(-1, -1);
   btn_stop.set(-1, -1);
+  btn_signal.set(-1, -1);
+  btn_up.set(-1, -1);
+  btn_down.set(-1, -1);
   btn_set1.set(-1, -1);
   btn_set2.set(-1, -1);
   btn_main.set(5, 10, 80, 40);
@@ -300,8 +360,8 @@ void set2_draw()
   btn_slave_reset.set(-1, -1);
   btn_slave_add.set(-1, -1);
   btn_slave_sub.set(-1, -1);
-  btn_save.set(-1, -1);
-  // M5.Buttons.draw(); // ボタンを描画
+  // btn_save.set(-1, -1);
+  //  M5.Buttons.draw(); // ボタンを描画
   btn_main.draw();
   btn_reset.draw();
   btn_register_11.draw();
@@ -322,6 +382,9 @@ void slave_draw()
   M5.Lcd.fillScreen(BLACK); // 画面初期化
   btn_start.set(-1, -1);
   btn_stop.set(-1, -1);
+  btn_signal.set(-1, -1);
+  btn_up.set(-1, -1);
+  btn_down.set(-1, -1);
   btn_set1.set(-1, -1);
   btn_set2.set(-1, -1);
   btn_main.set(5, 10, 80, 40);
@@ -350,14 +413,14 @@ void slave_draw()
   btn_slave_reset.set(115, 100, 50, 50);
   btn_slave_add.set(255, 50, 50, 50);
   btn_slave_sub.set(255, 150, 50, 50);
-  btn_save.set(80, 150, 50, 50);
-  // M5.Buttons.draw(); // ボタンを描画
+  // btn_save.set(80, 150, 50, 50);
+  //  M5.Buttons.draw(); // ボタンを描画
   btn_main.draw();
   btn_slave_set.draw();
   btn_slave_reset.draw();
   btn_slave_add.draw();
   btn_slave_sub.draw();
-  btn_save.draw();
+  // btn_save.draw();
 
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(1);
@@ -382,6 +445,52 @@ void vibration()
   power.SetLDOEnable(3, false); // 3番をfalseにしてバイブレーション修了
 }
 #endif
+
+void receive_time_append(uint8_t unit, uint8_t lane, uint32_t time)
+{
+  for (uint8_t i = 0; i < 100; i++)
+  {
+    if (time_list[i].unit == 255)
+    {
+      time_list[i].unit = unit;
+      time_list[i].lane = lane;
+      time_list[i].time = time;
+      time_list_number = float(i / 5);
+
+      break;
+    }
+  }
+  main_draw();
+}
+
+void signal_send(uint8_t signal_no)
+{
+  // 20:消灯
+  // 21:黄色
+  // 22:赤色
+  // 23:緑色
+  uint8_t _unit_no = 17;
+
+  if (eeprom_date.slave_mac_address1[_unit_no] != 0xff ||
+      eeprom_date.slave_mac_address2[_unit_no] != 0xff ||
+      eeprom_date.slave_mac_address3[_unit_no] != 0xff ||
+      eeprom_date.slave_mac_address4[_unit_no] != 0xff ||
+      eeprom_date.slave_mac_address5[_unit_no] != 0xff ||
+      eeprom_date.slave_mac_address6[_unit_no] != 0xff)
+  {
+
+    // 待機信号送信
+    uint8_t send_mac_add[6] = {
+        eeprom_date.slave_mac_address1[_unit_no],
+        eeprom_date.slave_mac_address2[_unit_no],
+        eeprom_date.slave_mac_address3[_unit_no],
+        eeprom_date.slave_mac_address4[_unit_no],
+        eeprom_date.slave_mac_address5[_unit_no],
+        eeprom_date.slave_mac_address6[_unit_no]};
+    uint8_t data[1] = {signal_no};
+    esp_err_t result = esp_now_send(send_mac_add, data, sizeof(data));
+  }
+}
 
 esp_now_peer_info_t slave;
 // 送信コールバック
@@ -457,24 +566,39 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len)
 
     // スタート準備信号
     case 10:
-
+      start_trig = true;
       break;
 
-    // スタート信号
+    // シグナル信号
     case 11:
-
+      signal_trig = true;
       break;
 
-    // リセット信号
+    // ストップ信号
     case 12:
-
+      stop_trig = true;
       break;
 
     // 現在時間受信
     case 32:
-      receve_time = millis();
-      _receive_time_data = data[4] * 2 ^ 24 + data[3] * 2 ^ 16 + data[2] * 2 ^ 8 + data[1];
-      comp_time[_receive_no] = _receive_time - _receive_time_data;
+      if (start_trig_time != 0)
+      {
+        receve_time = millis();
+        _receive_time_data = uint32_t(data[2] << 24) + uint32_t(data[3] << 16) + uint32_t(data[4] << 8) + uint32_t(data[5]);
+        comp_time[_receive_no] = _receive_time - _receive_time_data;
+
+        // 測定開始信号送信
+        uint8_t send_mac_add[6] = {mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]};
+        uint8_t data[1] = {30};
+        esp_err_t result = esp_now_send(send_mac_add, data, sizeof(data));
+      }
+      else
+      {
+        // 待機信号送信
+        uint8_t send_mac_add[6] = {mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]};
+        uint8_t data[1] = {31};
+        esp_err_t result = esp_now_send(send_mac_add, data, sizeof(data));
+      }
 
       break;
 
@@ -482,22 +606,22 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len)
     case 33:
       for (int i = 0; i < 5; i++)
       {
-        if (receive_data_list[i].number != 255)
+        if (receive_data_list[i].number == 255)
         {
-          _receive_time_data = data[5] * 2 ^ 24 + data[4] * 2 ^ 16 + data[3] * 2 ^ 8 + data[2];
-          receive_data_list[i].number = data[0];
-          receive_data_list[i].lane = data[1];
+          _receive_time_data = uint32_t(data[3] << 24) + uint32_t(data[4] << 16) + uint32_t(data[5] << 8) + uint32_t(data[6]);
+          // Serial.println(_receive_time_data);
+          receive_data_list[i].number = data[1];
+          receive_data_list[i].lane = data[2];
           receive_data_list[i].time = _receive_time_data + comp_time[_receive_no];
           if (start_time == 0)
           {
             start_time = receive_data_list[i].time;
+            device_status = 0; // デバイス：通常
           }
 
           break;
         }
       }
-
-      // comp_time[_receive_no] = _receive_time - _receive_time_data;
 
       break;
 
@@ -507,61 +631,134 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len)
   }
 }
 
-// スタート時の処理
-void start()
+// macアドレスセット
+void esp_now_mac_set()
 {
+  // マルチキャスト用Slave登録
+  memset(&slave, 0, sizeof(slave));
+  for (int i = 0; i < 6; ++i)
+  {
+    slave.peer_addr[i] = (uint8_t)0xff;
+  }
+  esp_err_t addStatus = esp_now_add_peer(&slave);
+  for (int i = 0; i < 19; i++)
+  {
+    slave.peer_addr[0] = eeprom_date.slave_mac_address1[i];
+    slave.peer_addr[1] = eeprom_date.slave_mac_address2[i];
+    slave.peer_addr[2] = eeprom_date.slave_mac_address3[i];
+    slave.peer_addr[3] = eeprom_date.slave_mac_address4[i];
+    slave.peer_addr[4] = eeprom_date.slave_mac_address5[i];
+    slave.peer_addr[5] = eeprom_date.slave_mac_address6[i];
+    esp_err_t addStatus = esp_now_add_peer(&slave);
+  }
+  if (addStatus == ESP_OK)
+  {
+    // Pair success
+    Serial.println("Pair success");
+  }
+  // ESP-NOWコールバック登録
+  esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(OnDataRecv);
+}
+
+// スタート時の処理
+bool start()
+{
+  device_status = 1; // デバイス：スタート待機
+  // signal_send(21);
   // 受信した時間をリセット
   receive_time_reset();
   time_list_number = 0;
+  bool result = false;
+
   // 受信ログ削除
   for (int i = 0; i < 5; i++)
   {
     receive_data_list[i].number = 255;
   }
+
+  // 受信した時間をリセット
   for (int i = 0; i < (sizeof(comp_time) / sizeof(comp_time[0])); i++)
   {
     comp_time[i] = 0;
   }
 
-  for (uint8_t i = 0; i < 19; i++)
+  start_time = 0;
+
+  start_trig_time = millis(); // スタート準備した時間をセット
+
+  // 全子機の問い合わせ待ち
+  for (uint8_t j = 0; j < 20; j++)
   {
-    uint8_t data[] = {30, i};
-    if (eeprom_date.slave_mac_address1[i] != 0xff ||
-        eeprom_date.slave_mac_address2[i] != 0xff ||
-        eeprom_date.slave_mac_address3[i] != 0xff ||
-        eeprom_date.slave_mac_address4[i] != 0xff ||
-        eeprom_date.slave_mac_address5[i] != 0xff ||
-        eeprom_date.slave_mac_address6[i] != 0xff)
+    delay(100);
+    result = true;
+    for (int i = 0; i < 18; i++)
     {
-      uint8_t send_address[6];
-      send_address[0] = eeprom_date.slave_mac_address1[i];
-      send_address[1] = eeprom_date.slave_mac_address2[i];
-      send_address[2] = eeprom_date.slave_mac_address3[i];
-      send_address[3] = eeprom_date.slave_mac_address4[i];
-      send_address[4] = eeprom_date.slave_mac_address5[i];
-      send_address[5] = eeprom_date.slave_mac_address6[i];
-
-      receve_time = 0;
-      send_time = millis();
-
-      esp_err_t result = esp_now_send(slave.peer_addr, data, sizeof(data));
-
-      // 返信があるまで待ち
-      for (int j = 0; j < 1000; j++)
+      if (eeprom_date.slave_mac_address1[i] == 255 &&
+          eeprom_date.slave_mac_address2[i] == 255 &&
+          eeprom_date.slave_mac_address3[i] == 255 &&
+          eeprom_date.slave_mac_address4[i] == 255 &&
+          eeprom_date.slave_mac_address5[i] == 255 &&
+          eeprom_date.slave_mac_address6[i] == 255)
       {
-        delay(1);
-        if (comp_time[i] != 0)
-          break;
+        // 登録されていない子機なので次に行く
+        unit_status[i] = 0; // 登録なしは"0"
+        continue;
       }
-#ifdef debug
-      Serial.println("responce");
-      Serial.println(i);
-      Serial.println(send_time);
-      Serial.println(receve_time);
-      Serial.println(comp_time[i]);
-#endif
+      else
+      {
+        // 子機の時間が登録されていない場合はfor文を繰り返して待つ
+        if (comp_time[i] == 0)
+        {
+          unit_status[i] = 2; // 応答待ちは"2"
+          result = false;
+          // break;
+        }
+        else
+        {
+          unit_status[i] = 1; // 応答済みは"1"
+        }
+      }
+    }
+    if (result == true)
+      break;
+  }
+  for (uint8_t i = 0; i < 18; i++)
+  {
+    Serial.print(F("unit,"));
+    switch (unit_status[i])
+    {
+    case 0:
+      Serial.println(F("none;"));
+      break;
+
+    case 1:
+      Serial.println(F("ok;"));
+      break;
+
+    case 2:
+      Serial.println(F("ng;"));
+      break;
+
+    default:
+      break;
     }
   }
+
+  delay(100);
+  start_trig_time = 0; // スタート準備した時間をセット
+  if (result == true)
+  {
+    signal_send(22); // 緑点灯
+  }
+  else
+  {
+    signal_send(21); // 黄点灯
+  }
+
+  main_draw();
+
+  return result;
 }
 
 // stop時の処理
@@ -590,6 +787,13 @@ void stop()
       esp_err_t result = esp_now_send(slave.peer_addr, data, sizeof(data));
     }
   }
+  signal_send(20);
+  device_status = 0; // デバイス：通常
+}
+
+void signal()
+{
+  signal_send(23);
 }
 
 void slave_set(uint8_t number)
@@ -616,7 +820,7 @@ void event_btn_start(Event &e)
   vibration();
   if (e.type == E_TOUCH)
   {
-    start();
+    start_trig = true;
   }
   else
   {
@@ -629,7 +833,50 @@ void event_btn_stop(Event &e)
 
   if (e.type == E_TOUCH)
   {
-    stop();
+    stop_trig = true;
+  }
+  else
+  {
+  }
+}
+
+void event_btn_signal(Event &e)
+{
+  vibration();
+
+  if (e.type == E_TOUCH)
+  {
+    signal_trig = true;
+  }
+  else
+  {
+  }
+}
+
+void event_btn_up(Event &e)
+{
+  vibration();
+
+  if (e.type == E_TOUCH)
+  {
+    if (time_list_number != 19)
+      time_list_number++;
+    main_draw();
+  }
+  else
+  {
+  }
+}
+
+void event_btn_down(Event &e)
+{
+  vibration();
+
+  if (e.type == E_TOUCH)
+  {
+    if (time_list_number != 0)
+      time_list_number--;
+    main_draw();
   }
   else
   {
@@ -704,6 +951,9 @@ void event_btn_slave_set(Event &e)
   {
     slave_set(slave_count_temp);
     delay(500);
+    eeprom_write();
+    esp_now_mac_set();
+
     slave_draw();
   }
   else
@@ -752,17 +1002,18 @@ void event_btn_slave_sub(Event &e)
   }
 }
 
-void event_btn_save(Event &e)
-{
-  vibration();
-  if (e.type == E_TOUCH)
-  {
-    eeprom_write();
-  }
-  else
-  {
-  }
-}
+// void event_btn_save(Event &e)
+//{
+//   vibration();
+//   if (e.type == E_TOUCH)
+//   {
+//     eeprom_write();
+//     esp_now_mac_set();
+//   }
+//  else
+//   {
+//   }
+// }
 
 // 登録
 void do_register(uint8_t data)
@@ -834,6 +1085,7 @@ void serial_read()
     {
       //ここに設定値のリストを書き込む
       eeprom_write();
+      esp_now_mac_set();
       Serial.println(F("save_ok;"));
     }
     else if (read_serial.equalsIgnoreCase("reset_all") == true)
@@ -877,7 +1129,6 @@ void serial_read()
         Serial.println(F(";"));
         slave_reset(int_data);
       }
-
     }
   }
   read_serial = ""; //　クリア
@@ -886,6 +1137,13 @@ void serial_read()
 void setup()
 {
   receive_time_reset();
+
+  // 受信ログ初期化
+  for (int i = 0; i < 5; i++)
+  {
+    receive_data_list[i].number = 255;
+  }
+
 #ifdef _M5Core2
   M5.begin(true, true, false, true); // Core2初期化
 
@@ -899,13 +1157,16 @@ void setup()
   M5.Lcd.setTextSize(2);
 
   // タッチパネル用
-  M5.Buttons.setFont(FSSB12);                                 // 全てのボタンのフォント指定
-  btn_start.addHandler(event_btn_start, E_TOUCH + E_RELEASE); // ボタンのイベント関数を指定
-  btn_stop.addHandler(event_btn_stop, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
-  btn_set1.addHandler(event_btn_set1, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
-  btn_set2.addHandler(event_btn_set2, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
-  btn_main.addHandler(event_btn_main, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
-  btn_reset.addHandler(event_btn_reset, E_TOUCH + E_RELEASE); // ボタンのイベント関数を指定
+  M5.Buttons.setFont(FSSB12);                                   // 全てのボタンのフォント指定
+  btn_start.addHandler(event_btn_start, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
+  btn_stop.addHandler(event_btn_stop, E_TOUCH + E_RELEASE);     // ボタンのイベント関数を指定
+  btn_signal.addHandler(event_btn_signal, E_TOUCH + E_RELEASE); // ボタンのイベント関数を指定
+  btn_up.addHandler(event_btn_up, E_TOUCH + E_RELEASE);         // ボタンのイベント関数を指定
+  btn_down.addHandler(event_btn_down, E_TOUCH + E_RELEASE);     // ボタンのイベント関数を指定
+  btn_set1.addHandler(event_btn_set1, E_TOUCH + E_RELEASE);     // ボタンのイベント関数を指定
+  btn_set2.addHandler(event_btn_set2, E_TOUCH + E_RELEASE);     // ボタンのイベント関数を指定
+  btn_main.addHandler(event_btn_main, E_TOUCH + E_RELEASE);     // ボタンのイベント関数を指定
+  btn_reset.addHandler(event_btn_reset, E_TOUCH + E_RELEASE);   // ボタンのイベント関数を指定
   btn_register_01.addHandler(event_register_01, E_TOUCH + E_RELEASE);
   btn_register_02.addHandler(event_register_02, E_TOUCH + E_RELEASE);
   btn_register_03.addHandler(event_register_03, E_TOUCH + E_RELEASE);
@@ -930,7 +1191,7 @@ void setup()
   btn_slave_reset.addHandler(event_btn_slave_reset, E_TOUCH + E_RELEASE);
   btn_slave_add.addHandler(event_btn_slave_add, E_TOUCH + E_RELEASE);
   btn_slave_sub.addHandler(event_btn_slave_sub, E_TOUCH + E_RELEASE);
-  btn_save.addHandler(event_btn_save, E_TOUCH + E_RELEASE);
+  // btn_save.addHandler(event_btn_save, E_TOUCH + E_RELEASE);
 
   M5.Axp.SetLed(false); // 緑LEDの消灯
 #endif
@@ -949,32 +1210,8 @@ void setup()
     Serial.println("ESPNow Init Failed");
     ESP.restart();
   }
-  // マルチキャスト用Slave登録
-  memset(&slave, 0, sizeof(slave));
-  for (int i = 0; i < 6; ++i)
-  {
-    slave.peer_addr[i] = (uint8_t)0xff;
-  }
-  esp_err_t addStatus = esp_now_add_peer(&slave);
-  for (int i = 0; i < 19; i++)
-  {
-    slave.peer_addr[0] = eeprom_date.slave_mac_address1[i];
-    slave.peer_addr[1] = eeprom_date.slave_mac_address2[i];
-    slave.peer_addr[2] = eeprom_date.slave_mac_address3[i];
-    slave.peer_addr[3] = eeprom_date.slave_mac_address4[i];
-    slave.peer_addr[4] = eeprom_date.slave_mac_address5[i];
-    slave.peer_addr[5] = eeprom_date.slave_mac_address6[i];
-    esp_err_t addStatus = esp_now_add_peer(&slave);
-  }
 
-  if (addStatus == ESP_OK)
-  {
-    // Pair success
-    Serial.println("Pair success");
-  }
-  // ESP-NOWコールバック登録
-  esp_now_register_send_cb(OnDataSent);
-  esp_now_register_recv_cb(OnDataRecv);
+  esp_now_mac_set();
 
 #ifdef _M5Core2
   //メイン画面画面
@@ -988,22 +1225,46 @@ void loop()
 #ifdef _M5Core2
   M5.update();
 #endif
+  // 各種トリガ判定
+  if (start_trig == true)
+  {
+    start_trig = false;
+    start();
+  }
+  if (stop_trig == true)
+  {
+    stop_trig = false;
+    stop();
+  }
+  if (signal_trig == true)
+  {
+    signal_trig = false;
+    signal();
+  }
+
+  for (uint8_t i = 0; i < 17; i++)
+  {
+    if (response_trig[i] == true)
+    {
+      response_trig[i] = false;
+    }
+  }
 
   // 受信表示
   for (int i = 0; i < 5; i++)
   {
     if (receive_data_list[i].number != 255)
     {
-      receive_time_append(receive_data_list[i].number - start_time,
+      receive_time_append(receive_data_list[i].number,
                           receive_data_list[i].lane,
-                          receive_data_list[i].time);
+                          receive_data_list[i].time - start_time);
       Serial.print(F("receive_time"));
       Serial.print(F(",number="));
       Serial.print(receive_data_list[i].number);
       Serial.print(F(",lane="));
       Serial.print(receive_data_list[i].lane);
       Serial.print(F(",time="));
-      Serial.print(receive_data_list[i].time);
+      Serial.print(receive_data_list[i].time - start_time);
       Serial.println(F(";"));
       // 送信したら無効化する
       receive_data_list[i].number = 255;
